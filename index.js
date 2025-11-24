@@ -1273,9 +1273,9 @@ client.on('interactionCreate', async interaction => {
 
     if (commandName === 'stop') {
         const queue = playerManager.queues?.get(interaction.guildId);
-        if (!queue || !queue.songs.length) return interaction.reply('Nothing is playing…');
+        if (!queue || (!queue.songs.length && !queue.connection)) return interaction.reply('Nothing is playing…');
         queue.stop();
-        return interaction.reply('Stopped playback and cleared queue.');
+        return interaction.reply('Stopped playback, cleared queue, and left the voice channel.');
     }
 
     if (commandName === 'pause') {

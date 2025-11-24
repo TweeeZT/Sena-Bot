@@ -571,7 +571,15 @@ class GuildQueue {
     this.songs = [];
     this.player.stop();
     this._clearNowPlayingMessage();
-    this.textChannel.send('⏹️ Stopped and cleared queue.');
+    if (this.connection) {
+      try {
+        this.connection.destroy();
+      } catch (e) {
+        console.error('Error destroying voice connection:', e);
+      }
+      this.connection = null;
+    }
+    this.textChannel.send('⏹️ Stopped, cleared queue, and left the voice channel.');
   }
   pause() {
     if (this.player.pause()) {
