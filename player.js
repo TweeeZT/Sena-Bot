@@ -460,106 +460,67 @@ class GuildQueue {
     this.isTransitioning = false;
     const disablePlaydl = process.env.DISABLE_PLAYDL === '1' || process.env.NO_PLAYDL === '1';
     const announce = () => this._sendNowPlayingEmbed(current);
-    if (!disablePlaydl) {
-      // Primary
+      // Force yt-dlp for all YouTube links and add detailed error logging
+      let direct = null;
       try {
-        const s = await playdl.stream(current.url);
-        const r = createAudioResource(s.stream, { 
-          inputType: s.type,
-          inlineVolume: true
-        });
-        r.volume?.setVolume(1.0);
-        s.stream.on('error', err => {
-          if (err.message !== 'aborted' && !err.message.includes('premature')) {
-            console.error('[stream error]', err);
-          }
-        });
-        this.currentResource = r; // Keep reference to prevent GC
-        this.player.play(r);
-        console.log('[playback] Started via play-dl primary method');
-        announce();
-        return;
-      } catch (e) { console.error('[primary fail]', e.message); }
-      // Info fallback
-      try {
-        const info = await playdl.video_basic_info(current.url);
-        const s = await playdl.stream_from_info(info);
-        const r = createAudioResource(s.stream, { 
-          inputType: s.type,
-          inlineVolume: true
-        });
-        r.volume?.setVolume(1.0);
-        s.stream.on('error', err => {
-          if (err.message !== 'aborted' && !err.message.includes('premature')) {
-            console.error('[stream error]', err);
-          }
-        });
-        this.currentResource = r; // Keep reference to prevent GC
-        this.player.play(r);
-        console.log('[playback] Started via play-dl info fallback');
-        announce();
-        return;
-      } catch (e) { console.error('[info fallback fail]', e.message); }
-    } else {
-      console.log('Play-dl disabled via env flag, skipping primary fallbacks');
-    }
-    // yt-dlp extraction
-    let direct = null;
-    try {
-      const json = await ytdlp(current.url, { dumpSingleJson:true, noWarnings:true, skipDownload:true, noCallHome:true, format:'bestaudio/best' });
-      direct = json?.url;
-      if (!direct && Array.isArray(json?.requested_formats)) direct = json.requested_formats.find(f=>f?.url)?.url;
-      if (!direct && Array.isArray(json?.formats)) {
-        const best = json.formats.filter(f=>/audio/i.test(f?.acodec) && !/video/i.test(f?.vcodec)).slice(-1)[0];
-        direct = best?.url;
+        const json = await ytdlp(current.url, { dumpSingleJson:true, noWarnings:true, skipDownload:true, noCallHome:true, format:'bestaudio/best' });
+        direct = json?.url;
+        if (!direct && Array.isArray(json?.requested_formats)) direct = json.requested_formats.find(f=>f?.url)?.url;
+        if (!direct && Array.isArray(json?.formats)) {
+          const best = json.formats.filter(f=>/audio/i.test(f?.acodec) && !/video/i.test(f?.vcodec)).slice(-1)[0];
+          direct = best?.url;
+        }
+        if (direct) console.log('[yt-dlp] direct url length:', direct.length);
+      } catch(e){
+        console.error('[yt-dlp fail]', e.message, e);
+        this.textChannel.send('yt-dlp failed: ' + e.message);
       }
-      if (direct) console.log('[yt-dlp] direct url length:', direct.length);
-    } catch(e){ console.error('[yt-dlp fail]', e.message); }
-    if (direct) {
-      // Skip direct stream - it's unreliable and drops connection mid-playback
-      // Use ffmpeg to properly buffer and transcode the stream
-      // ffmpeg encode
-      try {
-        const ffmpegPath = process.env.FFMPEG_PATH || ffmpegStatic;
-        const args = [
-          '-reconnect', '1',
-          '-reconnect_streamed', '1', 
-          '-reconnect_delay_max', '5',
-          '-i', direct,
-          '-analyzeduration', '0',
-          '-loglevel', 'error',
-          '-vn',
-          '-c:a', 'libopus',
-          '-b:a', '128k',
-          '-f', 'ogg',
-          'pipe:1'
-        ];
-        console.log('[ffmpeg encode] spawning with reconnect support...');
-        const proc = spawn(ffmpegPath, args, { stdio:['ignore','pipe','pipe'] });
-        proc.stderr.on('data', d=>{ const m=d.toString().trim(); if(m) console.warn('[ffmpeg]', m); });
-        proc.on('error', err=>console.error('[ffmpeg proc error]', err));
-        proc.on('close', code=>{ if(code!==0) console.warn('[ffmpeg exit]', code); });
-        proc.stdout.on('error', err => {
-          if (err.message !== 'aborted') console.error('[ffmpeg stdout error]', err);
-        });
-        const r = createAudioResource(proc.stdout, { 
-          inputType: StreamType.OggOpus,
-          inlineVolume: true
-        });
-        r.volume?.setVolume(1.0);
-        this.currentResource = r; // Keep reference to prevent GC
-        this.player.play(r);
-        console.log('[playback] Started via ffmpeg transcode');
-        announce();
-        return;
-      } catch(e){ console.error('[ffmpeg encode fail]', e.message); }
-    }
-    this.textChannel.send('All playback methods failed, skipping…');
-    this.songs.shift();
-    this._clearNowPlayingMessage();
-    if (this.songs.length) {
-      setImmediate(() => this._playCurrent());
-    }
+      if (direct) {
+        try {
+          const ffmpegPath = process.env.FFMPEG_PATH || ffmpegStatic;
+          const args = [
+            '-reconnect', '1',
+            '-reconnect_streamed', '1', 
+            '-reconnect_delay_max', '5',
+            '-i', direct,
+            '-analyzeduration', '0',
+            '-loglevel', 'error',
+            '-vn',
+            '-c:a', 'libopus',
+            '-b:a', '128k',
+            '-f', 'ogg',
+            'pipe:1'
+          ];
+          console.log('[ffmpeg encode] spawning with reconnect support...');
+          const proc = spawn(ffmpegPath, args, { stdio:['ignore','pipe','pipe'] });
+          proc.stderr.on('data', d=>{ const m=d.toString().trim(); if(m) console.warn('[ffmpeg]', m); });
+          proc.on('error', err=>console.error('[ffmpeg proc error]', err));
+          proc.on('close', code=>{ if(code!==0) console.warn('[ffmpeg exit]', code); });
+          proc.stdout.on('error', err => {
+            if (err.message !== 'aborted') console.error('[ffmpeg stdout error]', err);
+          });
+          const r = createAudioResource(proc.stdout, { 
+            inputType: StreamType.OggOpus,
+            inlineVolume: true
+          });
+          r.volume?.setVolume(1.0);
+          this.currentResource = r; // Keep reference to prevent GC
+          this.player.play(r);
+          console.log('[playback] Started via ffmpeg transcode');
+          announce();
+          return;
+        } catch(e){
+          console.error('[ffmpeg encode fail]', e.message, e);
+          this.textChannel.send('ffmpeg failed: ' + e.message);
+        }
+      } else {
+        this.textChannel.send('All playback methods failed, skipping…');
+      }
+      this.songs.shift();
+      this._clearNowPlayingMessage();
+      if (this.songs.length) {
+        setImmediate(() => this._playCurrent());
+      }
   }
 
   skip() {
